@@ -1,6 +1,4 @@
-from eventlet import sleep, GreenPool
-from eventlet.queue import Queue
-import eventlet.greenthread as greenthread
+import asyncio
 import socket
 import struct
 from hashlib import md5
@@ -37,38 +35,40 @@ class Chewie(object):
         if not group_address:
             self.group_address = self.EAP_ADDRESS
 
-    def run(self):
+    async def run(self):
         self.logger.info("CHEWIE: Starting")
         self.open_socket()
         self.get_interface_info()
         self.build_state_machine()
         self.join_multicast_group()
-        self.start_threads_and_wait()
+        await self.start_threads_and_wait()
 
-    def start_threads_and_wait(self):
-        self.pool = GreenPool()
-        self.eventlets = []
+    async def start_threads_and_wait(self):
+        self._shutdown_future = asyncio.get_event_loop().create_future()
+        self.tasks = []
 
-        self.eventlets.append(self.pool.spawn(self.send_messages))
-        self.eventlets.append(self.pool.spawn(self.receive_messages))
+        self.tasks.append(asyncio.ensure_future(self.send_messages()))
+        self.tasks.append(asyncio.ensure_future(self.receive_messages()))
 
-        self.pool.waitall()
+        # TODO: implement shutdown
+        await self._shutdown_future
+        for task in self.tasks:
+            task.cancel()
 
     def auth_success(self, src_mac):
         if self.auth_handler:
             self.auth_handler(src_mac, self.group_address)
 
-    def send_messages(self):
+    async def send_messages(self):
         while True:
-            sleep(0)
-            message = self.state_machine.output_messages.get()
+            message = await self.state_machine.output_messages.get()
             self.logger.info("CHEWIE: Sending message %s to %s" % (message, str(self.group_address)))
             self.socket.send(MessagePacker.pack(message, self.group_address))
 
-    def receive_messages(self):
+    async def receive_messages(self):
+        loop = asyncio.get_event_loop()
         while True:
-            sleep(0)
-            packed_message = self.socket.recv(4096)
+            packed_message = await loop.sock_recv(self.socket, 4096)
             message = MessageParser.parse(packed_message)
             self.logger.info("CHEWIE: Received message: %s" % message)
             event = EventMessageReceived(message)
@@ -76,6 +76,7 @@ class Chewie(object):
 
     def open_socket(self):
         self.socket = socket.socket(socket.PF_PACKET, socket.SOCK_RAW, socket.htons(0x888e))
+        self.socket.setblocking(False)
         self.socket.bind((self.interface_name, 0))
 
     def build_state_machine(self):

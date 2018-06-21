@@ -44,7 +44,7 @@ class StateMachineIdentitySentTestCase(unittest.TestCase):
         self.state_machine.event(EventMessageReceived(message))
         self.assertEqual(self.state_machine.state, "identity request sent")
         self.assertEqual(self.state_machine.output_messages.qsize(), 1)
-        self.state_machine.output_messages.get()
+        self.state_machine.output_messages.get_nowait()
 
     def test_identity_request_received_moves_to_challenge_sent(self):
         message = IdentityMessage(MacAddress.from_string("00:12:34:56:78:90"), 1, Eap.RESPONSE, "betelgeuse")
@@ -61,12 +61,12 @@ class StateMachineChallengeSentTestCase(unittest.TestCase):
         self.state_machine.event(EventMessageReceived(message))
         self.assertEqual(self.state_machine.state, "identity request sent")
         self.assertEqual(self.state_machine.output_messages.qsize(), 1)
-        self.state_machine.output_messages.get()
+        self.state_machine.output_messages.get_nowait()
         message = IdentityMessage(MacAddress.from_string("00:12:34:56:78:90"), 1, Eap.RESPONSE, "betelgeuse")
         self.state_machine.event(EventMessageReceived(message))
         self.assertEqual(self.state_machine.state, "challenge sent")
         self.assertEqual(self.state_machine.output_messages.qsize(), 1)
-        self.state_machine.output_messages.get()
+        self.state_machine.output_messages.get_nowait()
 
     def test_correct_challenge_received_moves_to_authenticated(self):
         txn_id = 123

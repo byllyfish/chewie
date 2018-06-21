@@ -2,7 +2,7 @@ import os
 import struct
 
 from hashlib import md5
-from eventlet.queue import Queue
+from asyncio import Queue
 from .event import EventMessageReceived
 from .message_parser import IdentityMessage, Md5ChallengeMessage, EapolStartMessage
 from .message_parser import SuccessMessage, FailureMessage
@@ -46,7 +46,7 @@ class StateMachine:
         if isinstance(message, EapolStartMessage):
             self.txn_id = self.txn_id_method()
             identity_request = IdentityMessage(self.src_mac, self.txn_id, Eap.REQUEST, "")
-            self.output_messages.put(identity_request)
+            self.output_messages.put_nowait(identity_request)
             self.state = "identity request sent"
 
     def handle_identity_sent_message(self, message):
@@ -54,7 +54,7 @@ class StateMachine:
             self.challenge = self.challenge_method(16)
             self.calculate_expected_response()
             challenge_request = Md5ChallengeMessage(self.src_mac, self.txn_id, Eap.REQUEST, self.challenge, b"")
-            self.output_messages.put(challenge_request)
+            self.output_messages.put_nowait(challenge_request)
             self.state = "challenge sent"
 
     def handle_challenge_sent_message(self, message):
@@ -63,11 +63,11 @@ class StateMachine:
                 if self.auth_success:
                     self.auth_success(message.src_mac)
                 message = SuccessMessage(self.src_mac, self.txn_id)
-                self.output_messages.put(message)
+                self.output_messages.put_nowait(message)
                 self.state = "authenticated"
             else:
                 message = FailureMessage(self.src_mac, self.txn_id)
-                self.output_messages.put(message)
+                self.output_messages.put_nowait(message)
                 self.state = "idle"
 
     def calculate_expected_response(self):
