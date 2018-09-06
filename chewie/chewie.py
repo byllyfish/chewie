@@ -2,14 +2,10 @@
 """
 from fcntl import ioctl
 import os
-import sched
+import socket
 import struct
-import time
 
-from eventlet import sleep, GreenPool
-from eventlet.green import socket
-from eventlet.queue import Queue
-
+import asyncio
 
 from chewie.eap_state_machine import FullEAPStateMachine
 from chewie.radius_attributes import EAPMessage, State, CalledStationId, NASPortType
@@ -22,6 +18,16 @@ from chewie.utils import get_logger
 def unpack_byte_string(byte_string):
     """unpacks a byte string"""
     return "".join("%02x" % x for x in byte_string)
+
+
+class _TimerScheduler:
+    """Adapt python `sched` API to asyncio."""
+    def __init__(self):
+        self.loop = asyncio.get_event_loop()
+
+    def enter(self, delay, _priority, action, argument=()):
+        """Adapt `sched.scheduler.enter` to asyncio event loop."""
+        self.loop.call_later(delay, action, *argument)  # pytype: disable=wrong-arg-types
 
 
 class Chewie:
@@ -63,10 +69,11 @@ class Chewie:
         self.packet_id_to_mac = {}  # radius_packet_id: mac
         self.packet_id_to_request_authenticator = {}
 
-        self.eap_output_messages = Queue()
-        self.radius_output_messages = Queue()
+        self.eap_output_messages = asyncio.Queue()
+        self.radius_output_messages = asyncio.Queue()
 
-        self.timer_scheduler = sched.scheduler(time.time, sleep)
+        self.timer_scheduler = _TimerScheduler()
+        self.loop = asyncio.get_event_loop()
 
         self.radius_id = -1
         self.socket = None
@@ -76,29 +83,32 @@ class Chewie:
         self.interface_index = None
         self.interface_address = None
 
-    def run(self):
+    async def run(self):
         """setup chewie and start socket eventlet threads"""
         self.logger.info("Starting")
         self.open_socket()
         self.open_radius_socket()
         self.get_interface_info()
         self.join_multicast_group()
-        self.start_threads_and_wait()
+        await self.start_threads_and_wait()
 
-    def start_threads_and_wait(self):
+    async def start_threads_and_wait(self):
         """Start the thread and wait until they complete (hopefully never)"""
-        self.pool = GreenPool()
-        self.eventlets = []
+        self._shutdown_future = self.loop.create_future()
+        self.tasks = []
 
-        self.eventlets.append(self.pool.spawn(self.send_eap_messages))
-        self.eventlets.append(self.pool.spawn(self.receive_eap_messages))
+        self.tasks.append(asyncio.ensure_future(self.send_eap_messages()))
+        self.tasks.append(asyncio.ensure_future(self.receive_eap_messages()))
 
-        self.eventlets.append(self.pool.spawn(self.send_radius_messages))
-        self.eventlets.append(self.pool.spawn(self.receive_radius_messages))
+        self.tasks.append(asyncio.ensure_future(self.send_radius_messages()))
+        self.tasks.append(asyncio.ensure_future(self.receive_radius_messages()))
 
-        self.eventlets.append(self.pool.spawn(self.timer_messages))
+        #self.tasks.append(asyncio.ensure_future(self.timer_messages()))
 
-        self.pool.waitall()
+        # TODO: implement shutdown
+        await self._shutdown_future
+        for task in self.tasks:
+            task.cancel()
 
     def auth_success(self, src_mac, port_id):
         """authentication shim between faucet and chewie
@@ -126,12 +136,11 @@ class Chewie:
         if self.logoff_handler:
             self.logoff_handler(src_mac, port_id)
 
-    def send_eap_messages(self):
+    async def send_eap_messages(self):
         """send eap messages to supplicant forever."""
         try:
             while True:
-                sleep(0)
-                message, src_mac, port_mac = self.eap_output_messages.get()
+                message, src_mac, port_mac = await self.eap_output_messages.get()
                 self.logger.info("Sending message %s from %s to %s" %
                                  (message, str(port_mac), str(src_mac)))
                 self.eap_send(MessagePacker.ethernet_pack(message, port_mac, src_mac))
@@ -143,13 +152,12 @@ class Chewie:
             data (bytes): data to send"""
         self.socket.send(data)
 
-    def receive_eap_messages(self):
+    async def receive_eap_messages(self):
         """receive eap messages from supplicant forever."""
         try:
             while True:
-                sleep(0)
                 self.logger.info("waiting for eap.")
-                packed_message = self.eap_receive()
+                packed_message = await self.eap_receive()
                 self.logger.info("Received packed_message: %s", str(packed_message))
 
                 message, dst_mac = MessageParser.ethernet_parse(packed_message)
@@ -161,17 +169,16 @@ class Chewie:
         except Exception as e:
             self.logger.exception(e)
 
-    def eap_receive(self):
+    async def eap_receive(self):
         """receive from eap socket"""
-        return self.socket.recv(4096)
+        return await self.loop.sock_recv(self.socket, 4096)
 
-    def send_radius_messages(self):
+    async def send_radius_messages(self):
         """send RADIUS messages to RADIUS Server forever."""
 
         try:
             while True:
-                sleep(0)
-                eap_message, src_mac, username, state = self.radius_output_messages.get()
+                eap_message, src_mac, username, state = await self.radius_output_messages.get()
                 self.logger.info("got eap to send to radius.. mac: %s %s, username: %s",
                                  type(src_mac), src_mac, username)
                 state_dict = None
@@ -198,14 +205,13 @@ class Chewie:
             data (bytes): what to send"""
         self.radius_socket.sendto(data, (self.radius_server_ip, self.radius_server_port))
 
-    def receive_radius_messages(self):
+    async def receive_radius_messages(self):
         """receive RADIUS messages from RADIUS server forever."""
 
         try:
             while True:
-                sleep(0)
                 self.logger.info("waiting for radius.")
-                packed_message = self.radius_receive()
+                packed_message = await self.radius_receive()
                 radius = MessageParser.radius_parse(packed_message, self.radius_secret,
                                                     self.request_authenticator_callback)
                 self.logger.info("Received RADIUS message: %s", radius)
@@ -219,9 +225,9 @@ class Chewie:
         except Exception as e:
             self.logger.exception(e)
 
-    def radius_receive(self):
+    async def radius_receive(self):
         """Receives from the radius socket"""
-        return self.radius_socket.recv(4096)
+        return await self.loop.sock_recv(self.radius_socket, 4096)
 
     def request_authenticator_callback(self, packet_id):
         """Callback to get the RADIUS request Authenticator
@@ -232,22 +238,10 @@ class Chewie:
             """
         return self.packet_id_to_request_authenticator[packet_id]
 
-    def timer_messages(self):
-        """Process timer based events forever."""
-        def scheduler_done():
-            self.logger.info("scheduler has processed it's last job.")
-        try:
-            while True:
-                # TODO how else could this be made to never end?
-                self.timer_scheduler.enter(999999, 99, scheduler_done)
-                self.timer_scheduler.run()
-                self.logger.info("scheduler completed")
-        except Exception as e:
-            self.logger.exception(e)
-
     def open_radius_socket(self):
         """Setup RADIUS Socket"""
         self.radius_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # pylint: disable=no-member
+        self.radius_socket.setblocking(False)
         self.logger.info("Radius Listening on %s:%d" % (self.radius_listen_ip,
                                                         self.radius_listen_port))
         self.radius_socket.bind((self.radius_listen_ip, self.radius_listen_port))
@@ -255,6 +249,7 @@ class Chewie:
     def open_socket(self):
         """Setup EAP socket"""
         self.socket = socket.socket(socket.PF_PACKET, socket.SOCK_RAW, socket.htons(0x888e)) # pylint: disable=no-member
+        self.socket.setblocking(False)
         self.socket.bind((self.interface_name, 0))
 
     def prepare_extra_radius_attributes(self):
