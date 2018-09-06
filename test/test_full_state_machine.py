@@ -1,7 +1,7 @@
 import sched
 import time
-from queue import Queue
 import unittest
+import asyncio
 
 from netils import build_byte_string
 
@@ -21,8 +21,8 @@ class FullStateMachineStartTestCase(unittest.TestCase):
     # and not just the final resting spot. Not sure how to do that - maybe parse the log??
 
     def setUp(self):
-        self.eap_output_queue = Queue()
-        self.radius_output_queue = Queue()
+        self.eap_output_queue = asyncio.Queue()
+        self.radius_output_queue = asyncio.Queue()
         self.timer_scheduler = sched.scheduler(time.time, time.sleep)
         self.src_mac = MacAddress.from_string("00:12:34:56:78:90")
         self.sm = FullEAPStateMachine(self.eap_output_queue, self.radius_output_queue, self.src_mac,
