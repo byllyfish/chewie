@@ -7,6 +7,7 @@ from queue import Queue
 import tempfile
 import time
 import unittest
+import asyncio
 
 from netils import build_byte_string
 
@@ -59,8 +60,8 @@ class FullStateMachineStartTestCase(unittest.TestCase):
         self.log_file = tempfile.NamedTemporaryFile()
         logger.addHandler(logging.FileHandler(self.log_file.name))
 
-        self.eap_output_queue = Queue()
-        self.radius_output_queue = Queue()
+        self.eap_output_queue = asyncio.Queue()
+        self.radius_output_queue = asyncio.Queue()
         self.timer_scheduler = timer_scheduler.TimerScheduler(get_logger('chewie'))
         self.src_mac = MacAddress.from_string("00:12:34:56:78:90")
         self.sm = FullEAPStateMachine(self.eap_output_queue, self.radius_output_queue, self.src_mac,

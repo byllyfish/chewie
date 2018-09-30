@@ -2,8 +2,6 @@
 import heapq
 import time
 
-import eventlet
-
 
 class TimerJob:
     """Represents a job for TimerScheduler, same api as asyncio.TimerHandle"""
@@ -44,7 +42,7 @@ class TimerScheduler:
         self.logger = logger
         self.timer_heap = []
 
-        self.sleep = eventlet.sleep
+        self.sleep = time.sleep
         if sleep:
             self.sleep = sleep
 
