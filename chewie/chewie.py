@@ -1,8 +1,9 @@
 """Entry point for 802.1X speaker.
 """
 
-from eventlet import sleep, GreenPool
-from eventlet.queue import Queue
+import os
+import struct
+import asyncio
 
 from chewie import timer_scheduler
 from chewie.eap_socket import EapSocket
@@ -47,11 +48,12 @@ class Chewie:
 
         self.state_machines = {}  # mac: state_machine
 
-        self.eap_output_messages = Queue()
-        self.radius_output_messages = Queue()
+        self.eap_output_messages = asyncio.Queue()
+        self.radius_output_messages = asyncio.Queue()
 
         self.radius_lifecycle = RadiusLifecycle(self.radius_secret, self.chewie_id, self.logger)
-        self.timer_scheduler = timer_scheduler.TimerScheduler(self.logger)
+        self.timer_scheduler = asyncio.get_event_loop()
+        self._shutdown_future = self.timer_scheduler.create_future()
 
         self.eap_socket = None
         self.pool = None
@@ -59,14 +61,14 @@ class Chewie:
         self.radius_socket = None
         self.interface_index = None
 
-        self.eventlets = []
+        self.tasks = []
 
-    def run(self):
+    async def run(self):
         """setup chewie and start socket eventlet threads"""
         self.logger.info("Starting")
         self.setup_eap_socket()
         self.setup_radius_socket()
-        self.start_threads_and_wait()
+        await self.start_threads_and_wait()
 
     def running(self):
         """Used to nicely exit the event loops"""
@@ -74,22 +76,26 @@ class Chewie:
 
     def shutdown(self):
         """kill eventlets and quit"""
-        for eventlet in self.eventlets:
-            eventlet.kill()
+        if not self._shutdown_future.done():
+            self._shutdown_future.set_result(1)
 
-    def start_threads_and_wait(self):
+    async def start_threads_and_wait(self):
         """Start the thread and wait until they complete (hopefully never)"""
-        self.pool = GreenPool()
+        self.tasks.append(asyncio.ensure_future(self.send_eap_messages()))
+        self.tasks.append(asyncio.ensure_future(self.receive_eap_messages()))
 
-        self.eventlets.append(self.pool.spawn(self.send_eap_messages))
-        self.eventlets.append(self.pool.spawn(self.receive_eap_messages))
+        self.tasks.append(asyncio.ensure_future(self.send_radius_messages()))
+        self.tasks.append(asyncio.ensure_future(self.receive_radius_messages()))
 
-        self.eventlets.append(self.pool.spawn(self.send_radius_messages))
-        self.eventlets.append(self.pool.spawn(self.receive_radius_messages))
+        await self.wait_all()
 
-        self.eventlets.append(self.pool.spawn(self.timer_scheduler.run))
-
-        self.pool.waitall()
+    async def wait_all(self):
+        # TODO: implement shutdown
+        try:
+            await self._shutdown_future
+        finally:
+            for task in self.tasks:
+                task.cancel()
 
     def auth_success(self, src_mac, port_id):
         """authentication shim between faucet and chewie
@@ -158,21 +164,21 @@ class Chewie:
         self.logger.info("Radius Listening on %s:%d" % (self.radius_listen_ip,
                                                         self.radius_listen_port))
 
-    def send_eap_messages(self):
+    async def send_eap_messages(self):
         """send eap messages to supplicant forever."""
         while self.running():
-            sleep(0)
-            message, src_mac, port_mac = self.eap_output_messages.get()
+            await asyncio.sleep(0)
+            message, src_mac, port_mac = await self.eap_output_messages.get()
             self.logger.info("Sending message %s from %s to %s" %
                              (message, str(port_mac), str(src_mac)))
             self.eap_socket.send(MessagePacker.ethernet_pack(message, port_mac, src_mac))
 
-    def receive_eap_messages(self):
+    async def receive_eap_messages(self):
         """receive eap messages from supplicant forever."""
         while self.running():
-            sleep(0)
+            await asyncio.sleep(0)
             self.logger.info("waiting for eap.")
-            packed_message = self.eap_socket.receive()
+            packed_message = await self.eap_socket.receive()
             self.logger.info("Received packed_message: %s", str(packed_message))
             eap, dst_mac = MessageParser.ethernet_parse(packed_message)
             self.send_eap_to_state_machine(eap, dst_mac)
@@ -184,21 +190,21 @@ class Chewie:
         event = EventMessageReceived(eap, dst_mac)
         state_machine.event(event)
 
-    def send_radius_messages(self):
+    async def send_radius_messages(self):
         """send RADIUS messages to RADIUS Server forever."""
         while self.running():
-            sleep(0)
-            radius_output_bits = self.radius_output_messages.get()
+            await asyncio.sleep(0)
+            radius_output_bits = await self.radius_output_messages.get()
             packed_message = self.radius_lifecycle.process_outbound(radius_output_bits)
             self.radius_socket.send(packed_message)
             self.logger.info("sent radius message.")
 
-    def receive_radius_messages(self):
+    async def receive_radius_messages(self):
         """receive RADIUS messages from RADIUS server forever."""
         while self.running():
-            sleep(0)
+            await asyncio.sleep(0)
             self.logger.info("waiting for radius.")
-            packed_message = self.radius_socket.receive()
+            packed_message = await self.radius_socket.receive()
             radius = MessageParser.radius_parse(packed_message, self.radius_secret,
                                                 self.radius_lifecycle)
             self.send_radius_to_state_machine(radius)

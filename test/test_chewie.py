@@ -1,15 +1,14 @@
 """Unittests for chewie/chewie.py"""
 
+import asyncio
 import logging
 import random
 import sys
 import tempfile
-import time
-import unittest
-from unittest.mock import patch
+import asynctest
+from asynctest.mock import patch
 
-import eventlet
-from eventlet.queue import Queue
+from asyncio import Queue
 
 from chewie.chewie import Chewie
 from chewie.eap_state_machine import FullEAPStateMachine
@@ -27,8 +26,8 @@ def patch_things(func):
     @patch('chewie.chewie.RadiusSocket', FakeRadiusSocket)
     @patch('chewie.chewie.RadiusLifecycle.generate_request_authenticator', urandom_helper)
     @patch('chewie.chewie.FullEAPStateMachine.nextId', nextId)
-    def wrapper_patch(self):
-        func(self)
+    async def wrapper_patch(self):
+        await func(self)
 
     return wrapper_patch
 
@@ -36,7 +35,7 @@ def patch_things(func):
 def setup_generators(_supplicant_replies=None, _radius_replies=None):
     """decorator to setup the packets for the mocked socket (queues) to send"""
     def decorator_setup_gen(func):
-        def wrapper_setup_gen(self):
+        async def wrapper_setup_gen(self):
             global SUPPLICANT_REPLY_GENERATOR  # pylint: disable=global-statement
             global RADIUS_REPLY_GENERATOR  # pylint: disable=global-statement
             global URANDOM_GENERATOR  # pylint: disable=global-statement
@@ -44,7 +43,7 @@ def setup_generators(_supplicant_replies=None, _radius_replies=None):
             SUPPLICANT_REPLY_GENERATOR = supplicant_replies_gen(_supplicant_replies)
             RADIUS_REPLY_GENERATOR = radius_replies_gen(_radius_replies)
             URANDOM_GENERATOR = urandom()
-            func(self)
+            await func(self)
         return wrapper_setup_gen
     return decorator_setup_gen
 
@@ -88,11 +87,11 @@ class FakeEapSocket:
     def setup(self):
         pass
 
-    def receive(self):  # pylint: disable=unused-argument
+    async def receive(self):  # pylint: disable=unused-argument
         global FROM_SUPPLICANT
 
         print('mocked eap_receive')
-        got = FROM_SUPPLICANT.get()
+        got = await FROM_SUPPLICANT.get()
         return got
 
 
@@ -119,11 +118,11 @@ class FakeRadiusSocket:
     def setup(self):
         pass
 
-    def receive(self):  # pylint: disable=unused-argument
+    async def receive(self):  # pylint: disable=unused-argument
         global FROM_RADIUS
 
         print('mocked radius_receive')
-        got = FROM_RADIUS.get()
+        got = await FROM_RADIUS.get()
         print('got RADIUS', got)
         return got
 
@@ -174,7 +173,7 @@ def logoff_handler(client_mac, port_id_mac):  # pylint: disable=unused-argument
     print('logoff from MAC %s on port: %s' % (str(client_mac), str(port_id_mac)))
 
 
-class ChewieTestCase(unittest.TestCase):
+class ChewieTestCase(asynctest.TestCase):
     """Main chewie.py test class"""
 
     no_radius_replies = []
@@ -270,19 +269,20 @@ class ChewieTestCase(unittest.TestCase):
 
     @patch_things
     @setup_generators(sup_replies_success, radius_replies_success)
-    def test_success_dot1x(self):
+    async def test_success_dot1x(self):
         """Test success api"""
-        FROM_SUPPLICANT.put_nowait(bytes.fromhex("0000000000010242ac17006f888e01010000"))
-        
-        pool = eventlet.GreenPool()
-        pool.spawn(self.chewie.run)
+        task = asyncio.ensure_future(self.chewie.run())
 
-        eventlet.sleep(0.1)
+        FROM_SUPPLICANT.put_nowait(bytes.fromhex("0000000000010242ac17006f888e01010000"))
+        await asyncio.sleep(0.1)
 
         self.assertEqual(
             self.chewie.get_state_machine('02:42:ac:17:00:6f',
                                           '00:00:00:00:00:01').currentState,
             FullEAPStateMachine.SUCCESS2)
+
+        task.cancel()
+        await asyncio.sleep(0.01)
 
     def test_port_status_changes(self):
         """test port status api"""
@@ -299,67 +299,68 @@ class ChewieTestCase(unittest.TestCase):
 
     @patch_things
     @setup_generators(sup_replies_logoff, radius_replies_success)
-    def test_logoff_dot1x(self):
+    async def test_logoff_dot1x(self):
         """Test logoff"""
+        task = asyncio.ensure_future(self.chewie.run())
+
         self.chewie.get_state_machine(MacAddress.from_string('02:42:ac:17:00:6f'),
                                       MacAddress.from_string('00:00:00:00:00:01'))
         FROM_SUPPLICANT.put_nowait(bytes.fromhex("0000000000010242ac17006f888e01010000"))
 
-        pool = eventlet.GreenPool()
-        pool.spawn(self.chewie.run)
-
-        eventlet.sleep(0.1)
+        await asyncio.sleep(0.1)
 
         self.assertEqual(
             self.chewie.get_state_machine('02:42:ac:17:00:6f',
                                           '00:00:00:00:00:01').currentState,
             FullEAPStateMachine.LOGOFF2)
 
+        task.cancel()
+        await asyncio.sleep(0.01)
+
     @patch_things
     @setup_generators(sup_replies_failure_message_id, no_radius_replies)
-    def test_failure_message_id_dot1x(self):
+    async def test_failure_message_id_dot1x(self):
         """Test incorrect message id results in timeout_failure"""
         # TODO not convinced this is transitioning through the correct states.
         # (should be discarding all packets)
         # But end result is correct (both packets sent/received, and end state)self.chewie.get_state_machine(MacAddress.from_string('02:42:ac:17:00:6f'),
+        task = asyncio.ensure_future(self.chewie.run())
+
         self.chewie.get_state_machine(MacAddress.from_string('02:42:ac:17:00:6f'),
                                       MacAddress.from_string(
                                           '00:00:00:00:00:01')).DEFAULT_TIMEOUT = 0.5
 
         FROM_SUPPLICANT.put_nowait(bytes.fromhex("0000000000010242ac17006f888e01010000"))
 
-        pool = eventlet.GreenPool()
-        pool.spawn(self.chewie.run)
-
-        while not self.fake_scheduler.jobs:
-            eventlet.sleep(0.1)
-        self.fake_scheduler.run_jobs()
+        await asyncio.sleep(4)
 
         self.assertEqual(
             self.chewie.get_state_machine('02:42:ac:17:00:6f',
                                           '00:00:00:00:00:01').currentState,
             FullEAPStateMachine.TIMEOUT_FAILURE)
 
+        task.cancel()
+        await asyncio.sleep(0.01)
 
     @patch_things
     @setup_generators(sup_replies_failure2_response_code, no_radius_replies)
-    def test_failure2_resp_code_dot1x(self):
+    async def test_failure2_resp_code_dot1x(self):
         """Test incorrect eap.code results in timeout_failure2. RADIUS Server drops it.
         It is up to the supplicant to send another request - this supplicant doesnt"""
+        task = asyncio.ensure_future(self.chewie.run())
+
         self.chewie.get_state_machine(MacAddress.from_string('02:42:ac:17:00:6f'),
                                       MacAddress.from_string(
                                           '00:00:00:00:00:01')).DEFAULT_TIMEOUT = 0.5
 
         FROM_SUPPLICANT.put_nowait(bytes.fromhex("0000000000010242ac17006f888e01010000"))
 
-        pool = eventlet.GreenPool()
-        pool.spawn(self.chewie.run)
-
-        while not self.fake_scheduler.jobs:
-            eventlet.sleep(0.1)
-        self.fake_scheduler.run_jobs()
+        await asyncio.sleep(2)
 
         self.assertEqual(
             self.chewie.get_state_machine('02:42:ac:17:00:6f',
                                           '00:00:00:00:00:01').currentState,
             FullEAPStateMachine.TIMEOUT_FAILURE2)
+
+        task.cancel()
+        await asyncio.sleep(0.01)
