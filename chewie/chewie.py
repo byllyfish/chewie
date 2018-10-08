@@ -91,10 +91,15 @@ class Chewie:
         self.tasks.append(asyncio.ensure_future(self.send_radius_messages()))
         self.tasks.append(asyncio.ensure_future(self.receive_radius_messages()))
 
+        await self.wait_all()
+
+    async def wait_all(self):
         # TODO: implement shutdown
-        await self._shutdown_future
-        for task in self.tasks:
-            task.cancel()
+        try:
+            await self._shutdown_future
+        finally:
+            for task in self.tasks:
+                task.cancel()
 
     def auth_success(self, src_mac, port_id):
         """authentication shim between faucet and chewie
@@ -159,6 +164,8 @@ class Chewie:
                 self.logger.info("Sending message %s from %s to %s" %
                                  (message, str(port_mac), str(src_mac)))
                 self.eap_send(MessagePacker.ethernet_pack(message, port_mac, src_mac))
+            except asyncio.CancelledError:
+                return
             except Exception as e:
                 self.logger.exception(e)
 
@@ -182,6 +189,8 @@ class Chewie:
                 sm = self.get_state_machine(message.src_mac, dst_mac)
                 event = EventMessageReceived(message, dst_mac)
                 sm.event(event)
+            except asyncio.CancelledError:
+                return
             except Exception as e:
                 self.logger.exception(e)
 
@@ -213,6 +222,8 @@ class Chewie:
                                                  self.extra_radius_request_attributes)
                 self.radius_send(data)
                 self.logger.info("sent radius message.")
+            except asyncio.CancelledError:
+                return
             except Exception as e:
                 self.logger.exception(e)
 
@@ -238,6 +249,8 @@ class Chewie:
                 self.logger.info("radius EAP: %s", eap_msg)
                 event = EventRadiusMessageReceived(eap_msg, state, radius.attributes.to_dict())
                 sm.event(event)
+            except asyncio.CancelledError:
+                return
             except Exception as e:
                 self.logger.exception(e)
 
