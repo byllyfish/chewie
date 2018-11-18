@@ -52,8 +52,8 @@ class Chewie:
         self.radius_output_messages = asyncio.Queue()
 
         self.radius_lifecycle = RadiusLifecycle(self.radius_secret, self.chewie_id, self.logger)
-        self.timer_scheduler = asyncio.get_event_loop()
-        self._shutdown_future = self.timer_scheduler.create_future()
+        self.event_loop = asyncio.get_event_loop()
+        self._shutdown_future = self.event_loop.create_future()
 
         self.eap_socket = None
         self.pool = None
@@ -242,7 +242,7 @@ class Chewie:
         state_machine = self.state_machines[port_id_str].get(src_mac_str, None)
         if not state_machine:
             state_machine = FullEAPStateMachine(self.eap_output_messages, self.radius_output_messages, src_mac,
-                                                self.timer_scheduler, self.auth_success,
+                                                self.event_loop, self.auth_success,
                                                 self.auth_failure, self.auth_logoff, self.logger.name)
             state_machine.eapRestart = True
             # TODO what if port is not actually enabled, but then how did they auth?

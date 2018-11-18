@@ -215,8 +215,8 @@ class ChewieTestCase(asynctest.TestCase):
                              auth_handler, failure_handler, logoff_handler,
                              '127.0.0.1', 1812, 'SECRET',
                              '44:44:44:44:44:44')
-        self.fake_scheduler = FakeTimerScheduler()
-        self.chewie.timer_scheduler = self.fake_scheduler
+        #self.fake_scheduler = FakeTimerScheduler()
+        #self.chewie.timer_scheduler = self.fake_scheduler
 
         global FROM_SUPPLICANT  # pylint: disable=global-statement
         global TO_SUPPLICANT  # pylint: disable=global-statement
@@ -274,7 +274,7 @@ class ChewieTestCase(asynctest.TestCase):
         task = asyncio.ensure_future(self.chewie.run())
 
         FROM_SUPPLICANT.put_nowait(bytes.fromhex("0000000000010242ac17006f888e01010000"))
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.5)
 
         self.assertEqual(
             self.chewie.get_state_machine('02:42:ac:17:00:6f',
@@ -307,7 +307,7 @@ class ChewieTestCase(asynctest.TestCase):
                                       MacAddress.from_string('00:00:00:00:00:01'))
         FROM_SUPPLICANT.put_nowait(bytes.fromhex("0000000000010242ac17006f888e01010000"))
 
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.5)
 
         self.assertEqual(
             self.chewie.get_state_machine('02:42:ac:17:00:6f',
