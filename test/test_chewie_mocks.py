@@ -61,7 +61,7 @@ class ChewieWithMocksTestCase(asynctest.TestCase):
         ethernet_pack.return_value = "packed ethernet"
         self.chewie.eap_output_messages.put_nowait(["output eap message", "src mac", "port mac"])
         await self.chewie.send_eap_messages()
-        self.chewie.eap_socket.send.assert_called_with("packed ethernet")
+        self.chewie.eap_socket.send.assert_called_with("packed ethernet") #pylint: disable=no-member
 
     @patch("chewie.chewie.Chewie.running", Mock(side_effect=[True, False]))
     @patch("chewie.chewie.MessageParser.radius_parse")
@@ -98,4 +98,4 @@ class ChewieWithMocksTestCase(asynctest.TestCase):
                 'packed radius'
             )})
         await self.chewie.send_radius_messages()
-        self.chewie.radius_socket.send.assert_called_with("packed radius")
+        self.chewie.radius_socket.send.assert_called_with("packed radius") #pylint: disable=no-member
