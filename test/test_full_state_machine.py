@@ -17,6 +17,12 @@ from chewie.event import EventMessageReceived, EventRadiusMessageReceived, Event
 from helpers import FakeTimerScheduler
 
 
+def _clear(_queue):
+    """Helper to clear queue."""
+    while not _queue.empty():
+        _queue.get_nowait()
+
+
 def check_counters(_func=None, *,
                    expected_auth_counter=0, expected_failure_counter=0, expected_logoff_counter=0):
     """Decorator to check the handlers have been called the
@@ -141,7 +147,7 @@ class FullStateMachineStartTestCase(unittest.TestCase):
     @check_counters(expected_auth_counter=1)
     def test_auth_success_after_timeout_failure2_from_max_retransmits(self):
         self.test_timeout_failure2_from_max_retransmits()
-        self.eap_output_queue.queue.clear()
+        _clear(self.eap_output_queue)
         self.test_success2()
 
     @check_counters(expected_auth_counter=1)
