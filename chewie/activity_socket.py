@@ -2,7 +2,8 @@
 
 import struct
 from fcntl import ioctl
-from eventlet.green import socket
+import socket
+import asyncio
 
 from chewie.mac_address import MacAddress
 
@@ -34,11 +35,12 @@ class ActivitySocket:
         """Not Implemented -- This socket is purely for Listening"""
         raise NotImplementedError('Attempted to send data down the activity socket')
 
-    def receive(self):
+    async def receive(self):
         """Receive activity from supplicant-facing socket"""
         # Skip all packets that are not DHCP requests
+        loop = asyncio.get_event_loop()
         while True:
-            ret_val = self.socket.recv(4096)
+            ret_val = await loop.sock_recv(self.socket, 4096)
 
             if ret_val[23:24] == self.UDP_IPTYPE:
                 src_port = struct.unpack('>H', ret_val[34:36])[0]
@@ -51,13 +53,14 @@ class ActivitySocket:
         """Listen on the Socket for any form of Eth() / IP() frames """
         self.socket = socket.socket(socket.PF_PACKET, socket.SOCK_RAW,  # pylint: disable=no-member
                                     socket.htons(self.IP_ETHERTYPE))    # pylint: disable=no-member
+        self.socket.setblocking(False)
         self.socket.bind((self.interface_name, 0))
 
     def get_interface_index(self):
         """Get the interface index of the Socket"""
         # http://man7.org/linux/man-pages/man7/netdevice.7.html
         request = struct.pack('16sI', self.interface_name.encode("utf-8"), 0)
-        response = ioctl(self.socket, self.SIOCGIFINDEX, request)
+        response = ioctl(self.socket.fileno(), self.SIOCGIFINDEX, request)
         _ifname, self.interface_index = struct.unpack('16sI', response)
 
     def set_interface_promiscuous(self):

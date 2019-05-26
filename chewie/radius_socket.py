@@ -1,6 +1,7 @@
 """Handle the RADIUS socket
 """
-from eventlet.green import socket
+import socket
+import asyncio
 
 
 class RadiusSocket:
@@ -16,6 +17,7 @@ class RadiusSocket:
     def setup(self):
         """Setup RADIUS Socket"""
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # pylint: disable=no-member
+        self.socket.setblocking(False)
         self.socket.bind((self.listen_ip, self.listen_port))
 
     def send(self, data):
@@ -23,6 +25,7 @@ class RadiusSocket:
             data (bytes): what to send"""
         self.socket.sendto(data, (self.server_ip, self.server_port))
 
-    def receive(self):
+    async def receive(self):
         """Receives from the radius socket"""
-        return self.socket.recv(4096)
+        loop = asyncio.get_event_loop()
+        return await loop.sock_recv(self.socket, 4096)

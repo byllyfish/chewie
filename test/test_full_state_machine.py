@@ -4,7 +4,7 @@
 import logging
 import tempfile
 import unittest
-from queue import Queue
+import asyncio
 
 from chewie.eap import Eap
 from chewie.event import EventMessageReceived, EventRadiusMessageReceived, EventPortStatusChange
@@ -15,6 +15,12 @@ from chewie.radius_attributes import State
 from chewie.state_machines.eap_state_machine import FullEAPStateMachine
 
 from helpers import FakeTimerScheduler
+
+
+def _clear(_queue):
+    """Helper to clear queue."""
+    while not _queue.empty():
+        _queue.get_nowait()
 
 
 def check_counters(_func=None, *,
@@ -58,8 +64,8 @@ class FullStateMachineStartTestCase(unittest.TestCase):
         self.log_file = tempfile.NamedTemporaryFile()
         logger.addHandler(logging.FileHandler(self.log_file.name))
 
-        self.eap_output_queue = Queue()
-        self.radius_output_queue = Queue()
+        self.eap_output_queue = asyncio.Queue()
+        self.radius_output_queue = asyncio.Queue()
         self.timer_scheduler = FakeTimerScheduler()
         self.src_mac = MacAddress.from_string("00:12:34:56:78:90")
         log_prefix = "chewie.SM - port: %s, client: %s" % (self.src_mac, self.PORT_ID_MAC)
@@ -162,7 +168,7 @@ class FullStateMachineStartTestCase(unittest.TestCase):
     @check_counters(expected_auth_counter=1)
     def test_auth_success_after_timeout_failure2_from_max_retransmits(self):
         self.test_timeout_failure2_from_max_retransmits()
-        self.eap_output_queue.queue.clear()
+        _clear(self.eap_output_queue)
         self.test_success2()
 
     @check_counters(expected_auth_counter=1)

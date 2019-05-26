@@ -2,7 +2,8 @@
 
 import struct
 from fcntl import ioctl
-from eventlet.green import socket
+import socket
+import asyncio
 
 from chewie.mac_address import MacAddress
 
@@ -31,22 +32,24 @@ class EapSocket:
             data (bytes): data to send"""
         self.socket.send(data)
 
-    def receive(self):
+    async def receive(self):
         """receive from eap socket"""
-        return self.socket.recv(4096)
+        loop = asyncio.get_event_loop()
+        return await loop.sock_recv(self.socket, 4096)
 
     def open(self):
         """Setup EAP socket"""
 
         self.socket = socket.socket(socket.PF_PACKET, socket.SOCK_RAW,  # pylint: disable=no-member
                                     socket.htons(0x888e))               # pylint: disable=no-member
+        self.socket.setblocking(False)
         self.socket.bind((self.interface_name, 0))
 
     def get_interface_index(self):
         """Get the interface index of the EAP Socket"""
         # http://man7.org/linux/man-pages/man7/netdevice.7.html
         request = struct.pack('16sI', self.interface_name.encode("utf-8"), 0)
-        response = ioctl(self.socket, self.SIOCGIFINDEX, request)
+        response = ioctl(self.socket.fileno(), self.SIOCGIFINDEX, request)
         _ifname, self.interface_index = struct.unpack('16sI', response)
 
     def set_interface_promiscuous(self):

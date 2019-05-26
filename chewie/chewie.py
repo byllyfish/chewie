@@ -1,7 +1,6 @@
 """ Entry point for 802.1X speaker. """
 import random
-from eventlet import sleep, GreenPool
-from eventlet.queue import Queue
+import asyncio
 
 from chewie import timer_scheduler
 from chewie.activity_socket import ActivitySocket
@@ -73,11 +72,12 @@ class Chewie:
         self.port_status = {}  # port_id: status (true=up, false=down)
         self.port_to_identity_job = {}  # port_id: timerJob
 
-        self.eap_output_messages = Queue()
-        self.radius_output_messages = Queue()
+        self.eap_output_messages = asyncio.Queue()
+        self.radius_output_messages = asyncio.Queue()
 
         self.radius_lifecycle = RadiusLifecycle(self.radius_secret, self.chewie_id, self.logger)
-        self.timer_scheduler = timer_scheduler.TimerScheduler(self.logger)
+        self.event_loop = asyncio.get_event_loop()
+        self._shutdown_future = self.event_loop.create_future()
 
         self.eap_socket = None
         self.ip_activity_socket = None
@@ -86,15 +86,15 @@ class Chewie:
         self.radius_socket = None
         self.interface_index = None
 
-        self.eventlets = []
+        self.tasks = []
 
-    def run(self):
+    async def run(self):
         """setup chewie and start socket eventlet threads"""
         self.logger.info("Starting")
         self.setup_eap_socket()
         self.setup_ip_activity_socket()
         self.setup_radius_socket()
-        self.start_threads_and_wait()
+        await self.start_threads_and_wait()
 
     def running(self):  # pylint: disable=no-self-use
         """Used to nicely exit the event loops"""
@@ -102,23 +102,27 @@ class Chewie:
 
     def shutdown(self):
         """kill eventlets and quit"""
-        for eventlet in self.eventlets:
-            eventlet.kill()
+        if not self._shutdown_future.done():
+            self._shutdown_future.set_result(1)
 
-    def start_threads_and_wait(self):
+    async def start_threads_and_wait(self):
         """Start the thread and wait until they complete (hopefully never)"""
-        self.pool = GreenPool()
+        self.tasks.append(asyncio.ensure_future(self.send_eap_messages()))
+        self.tasks.append(asyncio.ensure_future(self.receive_eap_messages()))
+        self.tasks.append(asyncio.ensure_future(self.receive_ip_activity_messages()))
 
-        self.eventlets.append(self.pool.spawn(self.send_eap_messages))
-        self.eventlets.append(self.pool.spawn(self.receive_eap_messages))
-        self.eventlets.append(self.pool.spawn(self.receive_ip_activity_messages))
+        self.tasks.append(asyncio.ensure_future(self.send_radius_messages()))
+        self.tasks.append(asyncio.ensure_future(self.receive_radius_messages()))
 
-        self.eventlets.append(self.pool.spawn(self.send_radius_messages))
-        self.eventlets.append(self.pool.spawn(self.receive_radius_messages))
+        await self.wait_all()
 
-        self.eventlets.append(self.pool.spawn(self.timer_scheduler.run))
-
-        self.pool.waitall()
+    async def wait_all(self):
+        # TODO: implement shutdown
+        try:
+            await self._shutdown_future
+        finally:
+            for task in self.tasks:
+                task.cancel()
 
     def auth_success(self, src_mac, port_id, period,
                      *args, **kwargs):  # pylint: disable=unused-variable
@@ -132,7 +136,7 @@ class Chewie:
         if self.auth_handler:
             self.auth_handler(src_mac, port_id, *args, **kwargs)
 
-        self.port_to_identity_job[port_id] = self.timer_scheduler.call_later(
+        self.port_to_identity_job[port_id] = self.event_loop.call_later(
             period,
             self.reauth_port, src_mac,
             port_id)
@@ -179,7 +183,7 @@ class Chewie:
         self.logger.info("port %s up", port_id)
         self.set_port_status(port_id, True)
 
-        self.port_to_identity_job[port_id] = self.timer_scheduler.call_later(
+        self.port_to_identity_job[port_id] = self.event_loop.call_later(
             self.DEFAULT_PORT_UP_IDENTITY_REQUEST_WAIT_PERIOD,
             self.send_preemptive_identity_request_if_no_active_on_port,
             port_id)
@@ -193,7 +197,7 @@ class Chewie:
         """
         self.logger.debug("thinking about executing timer preemptive on port %s", port_id)
         # schedule next request.
-        self.port_to_identity_job[port_id] = self.timer_scheduler.call_later(
+        self.port_to_identity_job[port_id] = self.event_loop.call_later(
             self.DEFAULT_PREEMPTIVE_IDENTITY_REQUEST_INTERVAL,
             self.send_preemptive_identity_request_if_no_active_on_port,
             port_id)
@@ -283,11 +287,11 @@ class Chewie:
         self.logger.info("Radius Listening on %s:%d" % (self.radius_listen_ip,
                                                         self.radius_listen_port))
 
-    def send_eap_messages(self):
+    async def send_eap_messages(self):
         """Send EAP messages to Supplicant forever."""
         while self.running():
-            sleep(0)
-            eap_queue_message = self.eap_output_messages.get()
+            await asyncio.sleep(0)
+            eap_queue_message = await self.eap_output_messages.get()
             self.logger.info("Sending message %s from %s to %s" %
                              (eap_queue_message.message, str(eap_queue_message.port_mac),
                               str(eap_queue_message.src_mac)))
@@ -308,12 +312,12 @@ class Chewie:
         state_machine.event(event)
         # NOTE: Should probably throttle packets in once one is received
 
-    def receive_eap_messages(self):
+    async def receive_eap_messages(self):
         """receive eap messages from supplicant forever."""
         while self.running():
-            sleep(0)
+            await asyncio.sleep(0)
             self.logger.info("waiting for eap.")
-            packed_message = self.eap_socket.receive()
+            packed_message = await self.eap_socket.receive()
             self.logger.info("Received packed_message: %s", str(packed_message))
             try:
                 eap, dst_mac = MessageParser.ethernet_parse(packed_message)
@@ -329,12 +333,12 @@ class Chewie:
             self.logger.info("Received eap message: %s", str(eap))
             self.send_eap_to_state_machine(eap, dst_mac)
 
-    def receive_ip_activity_messages(self):
+    async def receive_ip_activity_messages(self):
         """Receive IP activity over the 'eap interface' allowing for MAB."""
         while self.running():
-            sleep(0)
+            await asyncio.sleep(0)
             self.logger.info("waiting for ip activity.")
-            packed_message = self.ip_activity_socket.receive()
+            packed_message = await self.ip_activity_socket.receive()
             self.logger.info("Received ip activity packed_message: %s", str(packed_message))
             self.send_eth_to_state_machine(packed_message)
 
@@ -355,21 +359,21 @@ class Chewie:
 
         state_machine.event(event)
 
-    def send_radius_messages(self):
+    async def send_radius_messages(self):
         """send RADIUS messages to RADIUS Server forever."""
         while self.running():
-            sleep(0)
-            radius_output_bits = self.radius_output_messages.get()
+            await asyncio.sleep(0)
+            radius_output_bits = await self.radius_output_messages.get()
             packed_message = self.radius_lifecycle.process_outbound(radius_output_bits)
             self.radius_socket.send(packed_message)
             self.logger.info("sent radius message.")
 
-    def receive_radius_messages(self):
+    async def receive_radius_messages(self):
         """receive RADIUS messages from RADIUS server forever."""
         while self.running():
-            sleep(0)
+            await asyncio.sleep(0)
             self.logger.info("waiting for radius.")
-            packed_message = self.radius_socket.receive()
+            packed_message = await self.radius_socket.receive()
             try:
                 radius = MessageParser.radius_parse(packed_message, self.radius_secret,
                                                     self.radius_lifecycle)
@@ -426,7 +430,7 @@ class Chewie:
             log_prefix = "%s.SM - port: %s, client: %s" % (self.logger.name, port_id_str, src_mac)
             state_machine = MacAuthenticationBypassStateMachine(self.radius_output_messages,
                                                                 src_mac,
-                                                                self.timer_scheduler,
+                                                                self.event_loop,
                                                                 self.auth_success,
                                                                 self.auth_failure,
                                                                 log_prefix)
@@ -438,7 +442,7 @@ class Chewie:
             log_prefix = "%s.SM - port: %s, client: %s" % (self.logger.name, port_id_str, src_mac)
             state_machine = FullEAPStateMachine(self.eap_output_messages,
                                                 self.radius_output_messages, src_mac,
-                                                self.timer_scheduler, self.auth_success,
+                                                self.event_loop, self.auth_success,
                                                 self.auth_failure, self.auth_logoff,
                                                 log_prefix)
             self.state_machines[port_id_str][src_mac_str] = state_machine

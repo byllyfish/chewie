@@ -2,3 +2,4 @@ coverage
 pylint
 pytest-cov
 pytype==2018.8.10
+asynctest

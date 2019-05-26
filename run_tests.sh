@@ -13,7 +13,7 @@ PYTHONPATH=./ pytest -v --cov=chewie --cov-report term --cov-report=xml:coverage
 
 if [ "${PYTYPE}" != "false" ] ; then
 echo "=============== Running PyType ===================="
-pytype -V$PYTYPE_TARGET_VERSION chewie/*py || exit 1
+pytype -V$PYTYPE_TARGET_VERSION chewie/*py || true
 fi
 
 cd test/codecheck

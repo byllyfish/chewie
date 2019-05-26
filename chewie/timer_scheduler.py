@@ -1,7 +1,5 @@
 """Homebrew Event scheduler, as sched.scheduler was not working outside of unittests"""
 import heapq
-
-import eventlet
 import time
 
 
@@ -44,7 +42,7 @@ class TimerScheduler:
         self.logger = logger
         self.timer_heap = []
 
-        self.sleep = eventlet.sleep
+        self.sleep = time.sleep
         if sleep:
             self.sleep = sleep
 
